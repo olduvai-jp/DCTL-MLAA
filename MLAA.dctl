@@ -1,0 +1,336 @@
+// MLAA
+// Description: Morphological Anti-Aliasing ported to DCTL
+// Author: dyamagishi
+// SPDX-License-Identifier: MIT
+// 
+// References:
+// - 1: Original code from [https://github.com/GPUOpen-LibrariesAndSDKs/MLAA11]
+//      Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
+//      SPDX-License-Identifier: MIT
+// - 2: Ported to GLSL Code from [https://www.shadertoy.com/view/cllXRB]
+//      Copyright (c) 2023 by Denis Reischl
+//      SPDX-License-Identifier: MIT
+
+DEFINE_UI_PARAMS(showEdgesOnly, ShowEdgesOnly, DCTLUI_CHECK_BOX, 0)
+
+// constant values
+#define MAX_EDGE_COUNT_BITS 4
+
+// This constant defines the luminance intensity difference to check for when testing any 
+// two pixels for an edge.
+#define fInvEdgeDetectionThreshold (1.0 / 32.0)
+
+// --注意--
+// __CONSTANT__ int kNumCountBits = MAX_EDGE_COUNT_BITS;
+// __CONSTANT__ int kMaxEdgeLength = ((1u << (kNumCountBits - 1u)) - 1u) などと書くと、
+// dynamic initialization is not supported for a __constant__ variable
+// とエラーが出るので、定数はマクロで定義
+// --------
+
+#define kNumCountBits MAX_EDGE_COUNT_BITS
+
+#define kStopBit_BitPosition (kNumCountBits - 1u)
+#define kStopBit (1u << kStopBit_BitPosition)
+
+#define kMaxEdgeLength (kStopBit - 1u)
+
+#define kNegCountShift (kNumCountBits)
+#define kPosCountShift (00u)
+
+#define kCountShiftMask ((1u << kNumCountBits) - 1u)
+
+// Masks for the edge detection
+#define kUpperMask_BitPosition (0u)
+#define kUpperMask (1u << kUpperMask_BitPosition)
+
+#define kRightMask_BitPosition (1u)
+#define kRightMask (1u << kRightMask_BitPosition)
+
+typedef struct {
+    int x;
+    int y;
+} int2;
+
+// Utility function to create an int2 struct
+__DEVICE__ int2 make_int2(int x, int y) {
+    int2 result;
+    result.x = x;
+    result.y = y;
+    return result;
+}
+
+// Operator functions for int2
+__DEVICE__ inline int2 add_int2(int2 a, int2 b) {
+    return make_int2(a.x + b.x, a.y + b.y);
+}
+
+__DEVICE__ inline int2 subtract_int2(int2 a, int2 b) {
+    return make_int2(a.x - b.x, a.y - b.y);
+}
+
+__DEVICE__ inline int2 negate_int2(int2 a) {
+    return make_int2(-a.x, -a.y);
+}
+
+__DEVICE__ int2 clamp_int2(int2 v, int min_x, int min_y, int max_x, int max_y) {
+    int2 result;
+    result.x = _clampf(v.x, min_x, max_x);
+    result.y = _clampf(v.y, min_y, max_y);
+    return result;
+}
+
+// Constants for directions
+__CONSTANT__ int2 kZero = {0, 0};
+__CONSTANT__ int2 kUp = {0, -1};
+__CONSTANT__ int2 kDown = {0, 1};
+__CONSTANT__ int2 kLeft = {-1, 0};
+__CONSTANT__ int2 kRight = {1, 0};
+
+typedef struct {
+    __TEXTURE__ r;
+    __TEXTURE__ g;
+    __TEXTURE__ b;
+} Textures;
+
+// Utility Functions
+__DEVICE__ float _getLum(Textures tex, int p_X, int p_Y) {
+    return (0.299f * _tex2D(tex.r, p_X, p_Y) + 0.587f * _tex2D(tex.g, p_X, p_Y) + 0.114f * _tex2D(tex.b, p_X, p_Y));
+}
+
+__DEVICE__ bool CompareColors(float a, float b) {
+    return (_fabs(a - b) > fInvEdgeDetectionThreshold);
+}
+
+__DEVICE__ bool IsBitSet(int Value, const int uBitPosition) {
+    return (((Value & (1 << uBitPosition)) > 0) ? true : false);
+}
+
+__DEVICE__ int RemoveStopBit(int a) {
+    return a & (kStopBit - 1);
+}
+
+__DEVICE__ int DecodeCountNoStopBit(int count, int shift) {
+    return RemoveStopBit((count >> shift) & kCountShiftMask);
+}
+
+__DEVICE__ int DecodeCount(int count, int shift) {
+    return (count >> shift) & kCountShiftMask;
+}
+
+__DEVICE__ int EncodeCount(int negCount, int posCount) {
+    return ((negCount & kCountShiftMask) << kNegCountShift) | (posCount & kCountShiftMask);
+}
+
+// Edge Detection and Length Calculation
+__DEVICE__ int MLAA_SeperatingLines(Textures tex, int2 Offset, int p_Width, int p_Height) {
+    float center = _getLum(tex, Offset.x, Offset.y);
+    int2 OffsetUp = add_int2(Offset, kUp);
+    float upright_y = _getLum(tex, clamp_int2(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).x, clamp_int2(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).y);
+
+    int2 OffsetRight = add_int2(Offset, kRight);
+    float upright_x = _getLum(tex, clamp_int2(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).x, clamp_int2(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).y);
+
+    int rVal = 0;
+    if (CompareColors(center, upright_y)) rVal |= kUpperMask;
+    if (CompareColors(center, upright_x)) rVal |= kRightMask;
+
+    return rVal;
+}
+
+__DEVICE__ int2 MLAA_ComputeLineLength(Textures tex, int2 Offset, int p_Width, int p_Height) {
+    int pixel = MLAA_SeperatingLines(tex, Offset, p_Width, p_Height);
+
+    int EdgeCount[4] = {0, 0, 0, 0};
+
+    if ((pixel & (kUpperMask | kRightMask)) != 0) {
+        int EdgeDirMask[4] = {kUpperMask, kUpperMask, kRightMask, kRightMask};
+
+        int EdgeFound[4];
+        EdgeFound[0] = (pixel & EdgeDirMask[0]) != 0 ? 0xFFFFFFFF : 0;
+        EdgeFound[1] = (pixel & EdgeDirMask[1]) != 0 ? 0xFFFFFFFF : 0;
+        EdgeFound[2] = (pixel & EdgeDirMask[2]) != 0 ? 0xFFFFFFFF : 0;
+        EdgeFound[3] = (pixel & EdgeDirMask[3]) != 0 ? 0xFFFFFFFF : 0;
+
+        int StopBit[4];
+        StopBit[0] = (EdgeFound[0] != 0) ? kStopBit : 0;
+        StopBit[1] = (EdgeFound[1] != 0) ? kStopBit : 0;
+        StopBit[2] = (EdgeFound[2] != 0) ? kStopBit : 0;
+        StopBit[3] = (EdgeFound[3] != 0) ? kStopBit : 0;
+
+        for (int i = 1; i <= kMaxEdgeLength; i++) {
+            int uEdgeMask[4];
+            uEdgeMask[0] = MLAA_SeperatingLines(tex, make_int2(Offset.x - i, Offset.y), p_Width, p_Height);
+            uEdgeMask[1] = MLAA_SeperatingLines(tex, make_int2(Offset.x + i, Offset.y), p_Width, p_Height);
+            uEdgeMask[2] = MLAA_SeperatingLines(tex, make_int2(Offset.x, Offset.y + i), p_Width, p_Height);
+            uEdgeMask[3] = MLAA_SeperatingLines(tex, make_int2(Offset.x, Offset.y - i), p_Width, p_Height);
+
+            EdgeFound[0] &= (uEdgeMask[0] & EdgeDirMask[0]);
+            EdgeFound[1] &= (uEdgeMask[1] & EdgeDirMask[1]);
+            EdgeFound[2] &= (uEdgeMask[2] & EdgeDirMask[2]);
+            EdgeFound[3] &= (uEdgeMask[3] & EdgeDirMask[3]);
+
+            EdgeCount[0] = EdgeFound[0] != 0 ? EdgeCount[0] + 1 : EdgeCount[0] | StopBit[0];
+            EdgeCount[1] = EdgeFound[1] != 0 ? EdgeCount[1] + 1 : EdgeCount[1] | StopBit[1];
+            EdgeCount[2] = EdgeFound[2] != 0 ? EdgeCount[2] + 1 : EdgeCount[2] | StopBit[2];
+            EdgeCount[3] = EdgeFound[3] != 0 ? EdgeCount[3] + 1 : EdgeCount[3] | StopBit[3];
+        }
+    }
+    return make_int2(EncodeCount(EdgeCount[0], EdgeCount[1]), EncodeCount(EdgeCount[2], EdgeCount[3]));
+}
+
+__DEVICE__ float3 sqrt_float3(float3 a) {
+    return make_float3(_sqrtf(a.x), _sqrtf(a.y), _sqrtf(a.z));
+}
+
+__DEVICE__ float3 pow_float3(float3 a, float b) {
+    return make_float3(_powf(a.x, b), _powf(a.y, b), _powf(a.z, b));
+}
+
+// constant for the shape of the edge
+__CONSTANT__ uint upperU = 0x00;
+__CONSTANT__ uint risingZ = 0x01;
+__CONSTANT__ uint fallingZ = 0x02;
+__CONSTANT__ uint lowerU = 0x03;
+
+__DEVICE__ void BlendColor(Textures tex, int count, int2 pos, int2 dir, int2 ortho, bool _inverse, float3* color) {
+
+    float3 tmpColor = *color;
+
+    if (IsBitSet(count, kStopBit_BitPosition + kPosCountShift) || IsBitSet(count, kStopBit_BitPosition + kNegCountShift)) {
+        int negCount = DecodeCountNoStopBit(count, kNegCountShift);
+        int posCount = DecodeCountNoStopBit(count, kPosCountShift);
+
+        float3 adjacentColor = make_float3(
+            _tex2D(tex.r, pos.x + dir.x, pos.y + dir.y),
+            _tex2D(tex.g, pos.x + dir.x, pos.y + dir.y),
+            _tex2D(tex.b, pos.x + dir.x, pos.y + dir.y)
+        );
+
+        // if (_inverse) {
+        //     adjacentColor = make_float3(
+        //         _tex2D(tex.r, pos.x, pos.y),
+        //         _tex2D(tex.g, pos.x, pos.y),
+        //         _tex2D(tex.b, pos.x, pos.y)
+        //     );
+        // }
+
+        if ((negCount + posCount) == 0) {
+            float weight = 1.0f / 8.0f;
+            *color = sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, weight));
+            return;
+        } else {
+            if (!IsBitSet(count, (kStopBit_BitPosition + kPosCountShift))) posCount = kMaxEdgeLength + 1;
+            if (!IsBitSet(count, (kStopBit_BitPosition + kNegCountShift))) negCount = kMaxEdgeLength + 1;
+
+            float _length = negCount + posCount + 1.0f;
+            float midPoint = _length / 2.0f;
+            float _distance = float(negCount);
+
+            int shape = 0x00;
+            if (CompareColors(
+                _getLum(tex, pos.x - (ortho.x * negCount), pos.y - (ortho.y * negCount)),
+                _getLum(tex, pos.x - (ortho.x * (negCount + 1)), pos.y - (ortho.y * (negCount + 1))))) {
+                shape |= risingZ;
+            }
+
+            if (CompareColors(
+                _getLum(tex, pos.x + (ortho.x * posCount), pos.y + (ortho.y * posCount)),
+                _getLum(tex, pos.x + (ortho.x * (posCount + 1)), pos.y + (ortho.y * (posCount + 1))))) {
+                shape |= fallingZ;
+            }
+
+            if ((_inverse && (((shape == fallingZ) && (float(negCount) <= midPoint)) ||
+                              ((shape == risingZ) && (float(negCount) >= midPoint)) ||
+                              ((shape == upperU)))) ||
+                (!_inverse && (((shape == fallingZ) && (float(negCount) >= midPoint)) ||
+                               ((shape == risingZ) && (float(negCount) <= midPoint)) ||
+                               ((shape == lowerU)))))
+            {
+
+                // if(_inverse) {
+                //     *color = make_float3(
+                //         10.0 * ((shape == fallingZ) && (float(negCount) <= midPoint)), 
+                //         10.0 * ((shape == risingZ) && (float(negCount) >= midPoint)), 
+                //         10.0 * ((shape == upperU))
+                //     );
+                // }
+
+                // if(!_inverse) {
+                //     // *color = make_float3(
+                //     //     10.0 * ((shape == fallingZ) && (float(negCount) >= midPoint)), 
+                //     //     10.0 * ((shape == risingZ) && (float(negCount) <= midPoint)), 
+                //     //     10.0 * ((shape == lowerU))
+                //     // );
+                // }
+
+                float h0 = _fabs((1.0f / _length) * (_length - _distance) - 0.5f);
+                float h1 = _fabs((1.0f / _length) * (_length - _distance - 1.0f) - 0.5f);
+                float area = 0.5f * (h0 + h1);
+                *color = sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, area));
+            }
+        }
+    }
+}
+
+__DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTURE__ p_TexR, __TEXTURE__ p_TexG, __TEXTURE__ p_TexB) {
+    int2 Offset = make_int2(p_X, p_Y);
+    Textures tex = {p_TexR, p_TexG, p_TexB};
+
+    if (showEdgesOnly) {
+        float luminance = _getLum(tex, p_X, p_Y); 
+        float3 rVal = make_float3(luminance, luminance, luminance);
+
+        int hcount, vcount;
+        int hcountup, vcountright;
+        int2 _count = MLAA_ComputeLineLength(tex, Offset, p_Width, p_Height);
+        hcount = _count.x; vcount = _count.y;
+
+        int2 OffsetUp = subtract_int2(Offset, kUp);
+        hcountup = MLAA_ComputeLineLength(tex, OffsetUp, p_Width, p_Height).x;
+
+        int2 OffsetRight = subtract_int2(Offset, kRight);
+        vcountright = MLAA_ComputeLineLength(tex, OffsetRight, p_Width, p_Height).y;
+
+        if ((hcount != 0) || (vcount != 0)) {
+            rVal = make_float3(0.0f, 1.0f, 0.0f);
+            if ((IsBitSet(hcount, kStopBit_BitPosition + kPosCountShift) || IsBitSet(hcount, kStopBit_BitPosition + kNegCountShift)) ||
+                (IsBitSet(vcount, kStopBit_BitPosition + kPosCountShift) || IsBitSet(vcount, kStopBit_BitPosition + kNegCountShift))) {
+                rVal = make_float3(0.0f, 0.0f, 1.0f);
+                int Count = 0;
+                Count += DecodeCountNoStopBit(hcount, kNegCountShift);
+                Count += DecodeCountNoStopBit(hcount, kPosCountShift);
+                Count += DecodeCountNoStopBit(vcount, kNegCountShift);
+                Count += DecodeCountNoStopBit(vcount, kPosCountShift);
+                if (Count != 0) {
+                    rVal = make_float3(1.0 + DecodeCountNoStopBit(hcountup, kNegCountShift), 1.0 + DecodeCountNoStopBit(hcountup, kPosCountShift), 0.0f);
+                }
+            }
+        }
+        return rVal;
+    } else {
+        int hcount, vcount;
+        int hcountup, vcountright;
+
+        int2 _count = MLAA_ComputeLineLength(tex, Offset, p_Width, p_Height);
+        hcount = _count.x; vcount = _count.y;
+
+        int2 OffsetUp = subtract_int2(Offset, kUp);
+        hcountup = MLAA_ComputeLineLength(tex, OffsetUp, p_Width, p_Height).x;
+
+        int2 OffsetRight = subtract_int2(Offset, kRight);
+        vcountright = MLAA_ComputeLineLength(tex, OffsetRight, p_Width, p_Height).y;
+
+        float3 rVal = make_float3(
+            _tex2D(p_TexR, p_X, p_Y),
+            _tex2D(p_TexG, p_X, p_Y),
+            _tex2D(p_TexB, p_X, p_Y)
+        );
+         
+        if (hcount != 0)      BlendColor(tex, hcount, Offset, kUp, kRight, false, &rVal);
+        if (hcountup != 0)    BlendColor(tex, hcountup, OffsetUp, kZero, kRight, true, &rVal); // fix: kUp -> kZero
+        if (vcount != 0)      BlendColor(tex, vcount, Offset, kRight, kUp, false, &rVal);
+        if (vcountright != 0) BlendColor(tex, vcountright, OffsetRight, kZero, kUp, true, &rVal); // fix: kRight -> kZero
+
+        return rVal;
+    }
+}
