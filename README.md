@@ -14,6 +14,7 @@ This project is a port of Morphological Anti-Aliasing (MLAA) to DCTL (DaVinci Co
 <td align="center">After</td>
 </tr>
 </table>
+
 ## Features
 
 - Implements MLAA in DCTL to provide anti-aliasing effects.
