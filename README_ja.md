@@ -3,6 +3,16 @@
 ## 概要
 
 このプロジェクトは、Morphological Anti-Aliasing (MLAA) をDaVinci Resolve向けのDCTL（DaVinci Color Transform Language）に移植したものです。
+<table>
+<tr>
+<td><img src="https://github.com/user-attachments/assets/1994521a-a6ba-4675-bc9f-295a5878aaf0" alt="Original"></td>
+<td><img src="https://github.com/user-attachments/assets/3aa4a962-4fba-4cd4-b62f-e55be5cdb536" alt="MLAA Applied"></td>
+</tr>
+<tr>
+<td align="center">Before</td>
+<td align="center">After</td>
+</tr>
+</table>
 
 ## 特徴
 
@@ -23,7 +33,7 @@
 1. DaVinci Resolveでプロジェクトを開きます。
 2. カラーページで新しいノードを追加し、DCTLエフェクトを適用します。
 3. `MLAA.dctl`を選択します。
-4. 必要に応じてパラメータ`ShowEdgesOnly`を調整します。
+4. 必要に応じてパラメータ`ShowEdgesOnly`を調整します。（デバッグ用）
 
 ## ライセンス
 
