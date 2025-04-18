@@ -4,7 +4,16 @@
 ## Overview
 
 This project is a port of Morphological Anti-Aliasing (MLAA) to DCTL (DaVinci Color Transform Language) for use in DaVinci Resolve.
-
+<table>
+<tr>
+<td><img src="https://github.com/user-attachments/assets/1994521a-a6ba-4675-bc9f-295a5878aaf0" alt="Original"></td>
+<td><img src="https://github.com/user-attachments/assets/3aa4a962-4fba-4cd4-b62f-e55be5cdb536" alt="MLAA Applied"></td>
+</tr>
+<tr>
+<td align="center">Before</td>
+<td align="center">After</td>
+</tr>
+</table>
 ## Features
 
 - Implements MLAA in DCTL to provide anti-aliasing effects.
