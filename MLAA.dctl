@@ -151,7 +151,7 @@ __DEVICE__ Vec2i MLAA_ComputeLineLength(__TEXTURE__ texR, __TEXTURE__ texG, __TE
         StopBit[2] = (EdgeFound[2] != 0) ? kStopBit : 0;
         StopBit[3] = (EdgeFound[3] != 0) ? kStopBit : 0;
 
-        for (int i = 1; i <= kMaxEdgeLength; i++) {
+        for (unsigned int i = 1; i <= kMaxEdgeLength; i++) {
             int uEdgeMask[4];
             uEdgeMask[0] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x - i, Offset.y), p_Width, p_Height);
             uEdgeMask[1] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x + i, Offset.y), p_Width, p_Height);
@@ -186,9 +186,9 @@ __DEVICE__ float3 pow_float3(float3 a, float b) {
 #define fallingZ 0x02
 #define lowerU 0x03
 
-__DEVICE__ void BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, int count, Vec2i pos, Vec2i dir, Vec2i ortho, bool _inverse, float3* color) {
+__DEVICE__ float3 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, int count, Vec2i pos, Vec2i dir, Vec2i ortho, bool _inverse, float3 color) {
 
-    float3 tmpColor = *color;
+    float3 tmpColor = color;
 
     if (IsBitSet(count, kStopBit_BitPosition + kPosCountShift) || IsBitSet(count, kStopBit_BitPosition + kNegCountShift)) {
         int negCount = DecodeCountNoStopBit(count, kNegCountShift);
@@ -210,8 +210,7 @@ __DEVICE__ void BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB,
 
         if ((negCount + posCount) == 0) {
             float weight = 1.0f / 8.0f;
-            *color = sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, weight));
-            return;
+            return sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, weight));
         } else {
             if (!IsBitSet(count, (kStopBit_BitPosition + kPosCountShift))) posCount = kMaxEdgeLength + 1;
             if (!IsBitSet(count, (kStopBit_BitPosition + kNegCountShift))) negCount = kMaxEdgeLength + 1;
@@ -260,10 +259,12 @@ __DEVICE__ void BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB,
                 float h0 = _fabs((1.0f / _length) * (_length - _distance) - 0.5f);
                 float h1 = _fabs((1.0f / _length) * (_length - _distance - 1.0f) - 0.5f);
                 float area = 0.5f * (h0 + h1);
-                *color = sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, area));
+                return sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, area));
             }
         }
     }
+    
+    return color; // 変更がない場合は元の色を返す
 }
 
 __DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTURE__ p_TexR, __TEXTURE__ p_TexG, __TEXTURE__ p_TexB) {
@@ -319,10 +320,10 @@ __DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTU
             _tex2D(p_TexB, p_X, p_Y)
         );
          
-        if (hcount != 0)      BlendColor(p_TexR, p_TexG, p_TexB, hcount, Offset, kUp, kRight, false, &rVal);
-        if (hcountup != 0)    BlendColor(p_TexR, p_TexG, p_TexB, hcountup, OffsetUp, kZero, kRight, true, &rVal); // fix: kUp -> kZero
-        if (vcount != 0)      BlendColor(p_TexR, p_TexG, p_TexB, vcount, Offset, kRight, kUp, false, &rVal);
-        if (vcountright != 0) BlendColor(p_TexR, p_TexG, p_TexB, vcountright, OffsetRight, kZero, kUp, true, &rVal); // fix: kRight -> kZero
+        if (hcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, hcount, Offset, kUp, kRight, false, rVal);
+        if (hcountup != 0)    rVal = BlendColor(p_TexR, p_TexG, p_TexB, hcountup, OffsetUp, kZero, kRight, true, rVal); // fix: kUp -> kZero
+        if (vcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, vcount, Offset, kRight, kUp, false, rVal);
+        if (vcountright != 0) rVal = BlendColor(p_TexR, p_TexG, p_TexB, vcountright, OffsetRight, kZero, kUp, true, rVal); // fix: kRight -> kZero
 
         return rVal;
     }
