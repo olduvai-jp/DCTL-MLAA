@@ -2,7 +2,7 @@
 // Description: Morphological Anti-Aliasing ported to DCTL
 // Author: dyamagishi
 // SPDX-License-Identifier: MIT
-// 
+//
 // References:
 // - 1: Original code from [https://github.com/GPUOpen-LibrariesAndSDKs/MLAA11]
 //      Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
@@ -10,6 +10,9 @@
 // - 2: Ported to GLSL Code from [https://www.shadertoy.com/view/cllXRB]
 //      Copyright (c) 2023 by Denis Reischl
 //      SPDX-License-Identifier: MIT
+
+// Alpha channel mode definition (Premultiply is default if not specified)
+DEFINE_DCTL_ALPHA_MODE_PREMULTIPLY
 
 DEFINE_UI_PARAMS(showEdgesOnly, ShowEdgesOnly, DCTLUI_CHECK_BOX, 0)
 
@@ -87,8 +90,9 @@ __DEVICE__ Vec2i clamp_vec2i(Vec2i v, int min_x, int min_y, int max_x, int max_y
 #define kRight make_vec2i(1, 0)
 
 // Utility Functions
-__DEVICE__ float _getLum(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, int p_X, int p_Y) {
-    return (0.299f * _tex2D(texR, p_X, p_Y) + 0.587f * _tex2D(texG, p_X, p_Y) + 0.114f * _tex2D(texB, p_X, p_Y));
+__DEVICE__ float _getLum(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, __TEXTURE__ texA, int p_X, int p_Y) {
+    float alpha = _tex2D(texA, p_X, p_Y);
+    return (0.299f * _tex2D(texR, p_X, p_Y) + 0.587f * _tex2D(texG, p_X, p_Y) + 0.114f * _tex2D(texB, p_X, p_Y)) * alpha;
 }
 
 __DEVICE__ bool CompareColors(float a, float b) {
@@ -116,13 +120,13 @@ __DEVICE__ int EncodeCount(int negCount, int posCount) {
 }
 
 // Edge Detection and Length Calculation
-__DEVICE__ int MLAA_SeperatingLines(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, Vec2i Offset, int p_Width, int p_Height) {
-    float center = _getLum(texR, texG, texB, Offset.x, Offset.y);
+__DEVICE__ int MLAA_SeperatingLines(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, __TEXTURE__ texA, Vec2i Offset, int p_Width, int p_Height) {
+    float center = _getLum(texR, texG, texB, texA, Offset.x, Offset.y);
     Vec2i OffsetUp = add_vec2i(Offset, kUp);
-    float upright_y = _getLum(texR, texG, texB, clamp_vec2i(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).x, clamp_vec2i(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).y);
+    float upright_y = _getLum(texR, texG, texB, texA, clamp_vec2i(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).x, clamp_vec2i(OffsetUp, 0, 0, p_Width - 1, p_Height - 1).y);
 
     Vec2i OffsetRight = add_vec2i(Offset, kRight);
-    float upright_x = _getLum(texR, texG, texB, clamp_vec2i(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).x, clamp_vec2i(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).y);
+    float upright_x = _getLum(texR, texG, texB, texA, clamp_vec2i(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).x, clamp_vec2i(OffsetRight, 0, 0, p_Width - 1, p_Height - 1).y);
 
     int rVal = 0;
     if (CompareColors(center, upright_y)) rVal |= kUpperMask;
@@ -131,8 +135,8 @@ __DEVICE__ int MLAA_SeperatingLines(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTUR
     return rVal;
 }
 
-__DEVICE__ Vec2i MLAA_ComputeLineLength(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, Vec2i Offset, int p_Width, int p_Height) {
-    int pixel = MLAA_SeperatingLines(texR, texG, texB, Offset, p_Width, p_Height);
+__DEVICE__ Vec2i MLAA_ComputeLineLength(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, __TEXTURE__ texA, Vec2i Offset, int p_Width, int p_Height) {
+    int pixel = MLAA_SeperatingLines(texR, texG, texB, texA, Offset, p_Width, p_Height);
 
     int EdgeCount[4] = {0, 0, 0, 0};
 
@@ -153,10 +157,10 @@ __DEVICE__ Vec2i MLAA_ComputeLineLength(__TEXTURE__ texR, __TEXTURE__ texG, __TE
 
         for (unsigned int i = 1; i <= kMaxEdgeLength; i++) {
             int uEdgeMask[4];
-            uEdgeMask[0] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x - i, Offset.y), p_Width, p_Height);
-            uEdgeMask[1] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x + i, Offset.y), p_Width, p_Height);
-            uEdgeMask[2] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x, Offset.y + i), p_Width, p_Height);
-            uEdgeMask[3] = MLAA_SeperatingLines(texR, texG, texB, make_vec2i(Offset.x, Offset.y - i), p_Width, p_Height);
+            uEdgeMask[0] = MLAA_SeperatingLines(texR, texG, texB, texA, make_vec2i(Offset.x - i, Offset.y), p_Width, p_Height);
+            uEdgeMask[1] = MLAA_SeperatingLines(texR, texG, texB, texA, make_vec2i(Offset.x + i, Offset.y), p_Width, p_Height);
+            uEdgeMask[2] = MLAA_SeperatingLines(texR, texG, texB, texA, make_vec2i(Offset.x, Offset.y + i), p_Width, p_Height);
+            uEdgeMask[3] = MLAA_SeperatingLines(texR, texG, texB, texA, make_vec2i(Offset.x, Offset.y - i), p_Width, p_Height);
 
             EdgeFound[0] &= (uEdgeMask[0] & EdgeDirMask[0]);
             EdgeFound[1] &= (uEdgeMask[1] & EdgeDirMask[1]);
@@ -186,31 +190,37 @@ __DEVICE__ float3 pow_float3(float3 a, float b) {
 #define fallingZ 0x02
 #define lowerU 0x03
 
-__DEVICE__ float3 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, int count, Vec2i pos, Vec2i dir, Vec2i ortho, bool _inverse, float3 color) {
+__DEVICE__ float4 sqrt_float4(float4 a) {
+    return make_float4(_sqrtf(a.x), _sqrtf(a.y), _sqrtf(a.z), _sqrtf(a.w));
+}
 
-    float3 tmpColor = color;
+__DEVICE__ float4 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ texB, __TEXTURE__ texA, int count, Vec2i pos, Vec2i dir, Vec2i ortho, bool _inverse, float4 color) {
+
+    float4 tmpColor = color;
 
     if (IsBitSet(count, kStopBit_BitPosition + kPosCountShift) || IsBitSet(count, kStopBit_BitPosition + kNegCountShift)) {
         int negCount = DecodeCountNoStopBit(count, kNegCountShift);
         int posCount = DecodeCountNoStopBit(count, kPosCountShift);
 
-        float3 adjacentColor = make_float3(
+        float4 adjacentColor = make_float4(
             _tex2D(texR, pos.x + dir.x, pos.y + dir.y),
             _tex2D(texG, pos.x + dir.x, pos.y + dir.y),
-            _tex2D(texB, pos.x + dir.x, pos.y + dir.y)
+            _tex2D(texB, pos.x + dir.x, pos.y + dir.y),
+            _tex2D(texA, pos.x + dir.x, pos.y + dir.y)
         );
 
         // if (_inverse) {
-        //     adjacentColor = make_float3(
+        //     adjacentColor = make_float4(
         //         _tex2D(tex.r, pos.x, pos.y),
         //         _tex2D(tex.g, pos.x, pos.y),
-        //         _tex2D(tex.b, pos.x, pos.y)
+        //         _tex2D(tex.b, pos.x, pos.y),
+        //         _tex2D(tex.a, pos.x, pos.y)
         //     );
         // }
 
         if ((negCount + posCount) == 0) {
             float weight = 1.0f / 8.0f;
-            return sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, weight));
+            return sqrt_float4(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, weight));
         } else {
             if (!IsBitSet(count, (kStopBit_BitPosition + kPosCountShift))) posCount = kMaxEdgeLength + 1;
             if (!IsBitSet(count, (kStopBit_BitPosition + kNegCountShift))) negCount = kMaxEdgeLength + 1;
@@ -221,14 +231,14 @@ __DEVICE__ float3 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ tex
 
             int shape = 0x00;
             if (CompareColors(
-                _getLum(texR, texG, texB, pos.x - (ortho.x * negCount), pos.y - (ortho.y * negCount)),
-                _getLum(texR, texG, texB, pos.x - (ortho.x * (negCount + 1)), pos.y - (ortho.y * (negCount + 1))))) {
+                _getLum(texR, texG, texB, texA, pos.x - (ortho.x * negCount), pos.y - (ortho.y * negCount)),
+                _getLum(texR, texG, texB, texA, pos.x - (ortho.x * (negCount + 1)), pos.y - (ortho.y * (negCount + 1))))) {
                 shape |= risingZ;
             }
 
             if (CompareColors(
-                _getLum(texR, texG, texB, pos.x + (ortho.x * posCount), pos.y + (ortho.y * posCount)),
-                _getLum(texR, texG, texB, pos.x + (ortho.x * (posCount + 1)), pos.y + (ortho.y * (posCount + 1))))) {
+                _getLum(texR, texG, texB, texA, pos.x + (ortho.x * posCount), pos.y + (ortho.y * posCount)),
+                _getLum(texR, texG, texB, texA, pos.x + (ortho.x * (posCount + 1)), pos.y + (ortho.y * (posCount + 1))))) {
                 shape |= fallingZ;
             }
 
@@ -241,25 +251,27 @@ __DEVICE__ float3 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ tex
             {
 
                 // if(_inverse) {
-                //     *color = make_float3(
-                //         10.0 * ((shape == fallingZ) && (float(negCount) <= midPoint)), 
-                //         10.0 * ((shape == risingZ) && (float(negCount) >= midPoint)), 
-                //         10.0 * ((shape == upperU))
+                //     *color = make_float4(
+                //         10.0 * ((shape == fallingZ) && (float(negCount) <= midPoint)),
+                //         10.0 * ((shape == risingZ) && (float(negCount) >= midPoint)),
+                //         10.0 * ((shape == upperU)),
+                //         color.w
                 //     );
                 // }
 
                 // if(!_inverse) {
-                //     // *color = make_float3(
-                //     //     10.0 * ((shape == fallingZ) && (float(negCount) >= midPoint)), 
-                //     //     10.0 * ((shape == risingZ) && (float(negCount) <= midPoint)), 
-                //     //     10.0 * ((shape == lowerU))
+                //     // *color = make_float4(
+                //     //     10.0 * ((shape == fallingZ) && (float(negCount) >= midPoint)),
+                //     //     10.0 * ((shape == risingZ) && (float(negCount) <= midPoint)),
+                //     //     10.0 * ((shape == lowerU)),
+                //     //     color.w
                 //     // );
                 // }
 
                 float h0 = _fabs((1.0f / _length) * (_length - _distance) - 0.5f);
                 float h1 = _fabs((1.0f / _length) * (_length - _distance - 1.0f) - 0.5f);
                 float area = 0.5f * (h0 + h1);
-                return sqrt_float3(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, area));
+                return sqrt_float4(_mix(tmpColor * tmpColor, adjacentColor * adjacentColor, area));
             }
         }
     }
@@ -267,23 +279,26 @@ __DEVICE__ float3 BlendColor(__TEXTURE__ texR, __TEXTURE__ texG, __TEXTURE__ tex
     return color; // 変更がない場合は元の色を返す
 }
 
-__DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTURE__ p_TexR, __TEXTURE__ p_TexG, __TEXTURE__ p_TexB) {
+__DEVICE__ float4 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTURE__ p_TexR, __TEXTURE__ p_TexG, __TEXTURE__ p_TexB, __TEXTURE__ p_TexA) {
     Vec2i Offset = make_vec2i(p_X, p_Y);
+    
+    // アルファチャンネルの値を取得
+    float alpha = _tex2D(p_TexA, p_X, p_Y);
 
     if (showEdgesOnly) {
-        float luminance = _getLum(p_TexR, p_TexG, p_TexB, p_X, p_Y);
+        float luminance = _getLum(p_TexR, p_TexG, p_TexB, p_TexA, p_X, p_Y);
         float3 rVal = make_float3(luminance, luminance, luminance);
 
         int hcount, vcount;
         int hcountup, vcountright;
-        Vec2i _count = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, Offset, p_Width, p_Height);
+        Vec2i _count = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, Offset, p_Width, p_Height);
         hcount = _count.x; vcount = _count.y;
 
         Vec2i OffsetUp = subtract_vec2i(Offset, kUp);
-        hcountup = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, OffsetUp, p_Width, p_Height).x;
+        hcountup = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, OffsetUp, p_Width, p_Height).x;
 
         Vec2i OffsetRight = subtract_vec2i(Offset, kRight);
-        vcountright = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, OffsetRight, p_Width, p_Height).y;
+        vcountright = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, OffsetRight, p_Width, p_Height).y;
 
         if ((hcount != 0) || (vcount != 0)) {
             rVal = make_float3(0.0f, 1.0f, 0.0f);
@@ -300,30 +315,31 @@ __DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, __TEXTU
                 }
             }
         }
-        return rVal;
+        return make_float4(rVal.x, rVal.y, rVal.z, alpha);
     } else {
         int hcount, vcount;
         int hcountup, vcountright;
 
-        Vec2i _count = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, Offset, p_Width, p_Height);
+        Vec2i _count = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, Offset, p_Width, p_Height);
         hcount = _count.x; vcount = _count.y;
 
         Vec2i OffsetUp = subtract_vec2i(Offset, kUp);
-        hcountup = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, OffsetUp, p_Width, p_Height).x;
+        hcountup = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, OffsetUp, p_Width, p_Height).x;
 
         Vec2i OffsetRight = subtract_vec2i(Offset, kRight);
-        vcountright = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, OffsetRight, p_Width, p_Height).y;
+        vcountright = MLAA_ComputeLineLength(p_TexR, p_TexG, p_TexB, p_TexA, OffsetRight, p_Width, p_Height).y;
 
-        float3 rVal = make_float3(
+        float4 rVal = make_float4(
             _tex2D(p_TexR, p_X, p_Y),
             _tex2D(p_TexG, p_X, p_Y),
-            _tex2D(p_TexB, p_X, p_Y)
+            _tex2D(p_TexB, p_X, p_Y),
+            alpha
         );
          
-        if (hcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, hcount, Offset, kUp, kRight, false, rVal);
-        if (hcountup != 0)    rVal = BlendColor(p_TexR, p_TexG, p_TexB, hcountup, OffsetUp, kZero, kRight, true, rVal); // fix: kUp -> kZero
-        if (vcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, vcount, Offset, kRight, kUp, false, rVal);
-        if (vcountright != 0) rVal = BlendColor(p_TexR, p_TexG, p_TexB, vcountright, OffsetRight, kZero, kUp, true, rVal); // fix: kRight -> kZero
+        if (hcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, p_TexA, hcount, Offset, kUp, kRight, false, rVal);
+        if (hcountup != 0)    rVal = BlendColor(p_TexR, p_TexG, p_TexB, p_TexA, hcountup, OffsetUp, kZero, kRight, true, rVal); // fix: kUp -> kZero
+        if (vcount != 0)      rVal = BlendColor(p_TexR, p_TexG, p_TexB, p_TexA, vcount, Offset, kRight, kUp, false, rVal);
+        if (vcountright != 0) rVal = BlendColor(p_TexR, p_TexG, p_TexB, p_TexA, vcountright, OffsetRight, kZero, kUp, true, rVal); // fix: kRight -> kZero
 
         return rVal;
     }
