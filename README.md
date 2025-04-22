@@ -27,14 +27,14 @@ This project is a port of Morphological Anti-Aliasing (MLAA) to DCTL (DaVinci Co
 2. Copy `MLAA.dctl` to the DCTL folder of DaVinci Resolve:
 
    - Windows: `C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\LUT\`
-   - macOS: Not supported yet.
+   - macOS: `/Library/Application Support/Blackmagic Design/DaVinci Resolve/LUT/`
 
 ## Usage
 
 1. Open your project in DaVinci Resolve.
 2. In the Color page, add a new node and apply the DCTL effect.
 3. Select `MLAA.dctl`.
-4. Adjust the `ShowEdgesOnly` parameter as needed.
+4. (The `ShowEdgesOnly` parameter is for debugging purposes, so uncheck it.)
 
 ## License
 
